@@ -43,7 +43,18 @@ var center_label: Label
 var hint_label: Label
 var hud_label: Label
 
+# --- 진화 단계별 스프라이트 (사용자가 직접 넣는 이미지) ---
+# assets/stage0.png, stage1.png, stage2.png 가 있으면 자동 로드, 없으면 도형으로 폴백.
+var stage_textures: Array = [null, null, null]
+
+func _load_stage_textures() -> void:
+	for i in range(stage_textures.size()):
+		var path := "res://assets/stage%d.png" % i
+		if ResourceLoader.exists(path):
+			stage_textures[i] = load(path)
+
 func _ready() -> void:
+	_load_stage_textures()
 	title_label = _make_label(28, Color.WHITE)
 	title_label.position = Vector2(0, 16)
 	title_label.size = Vector2(1280, 40)
@@ -224,6 +235,15 @@ func _flight_pos(t: float) -> Vector2:
 	return Vector2(x, y)
 
 func _draw_lizard(pos: Vector2, body: Color) -> void:
+	# 사용자가 assets/stageN.png 를 넣었으면 그 이미지로, 없으면 도형 폴백.
+	var tex: Texture2D = stage_textures[evo_stage]
+	if tex != null:
+		var target := 96.0  # 화면상 표시 크기(px)
+		var scale := target / float(max(tex.get_width(), tex.get_height()))
+		var w := tex.get_width() * scale
+		var h := tex.get_height() * scale
+		draw_texture_rect(tex, Rect2(pos.x - w / 2.0, pos.y - h / 2.0, w, h), false)
+		return
 	draw_circle(pos, 20.0, body)                                  # 몸통
 	draw_circle(pos + Vector2(12, -8), 6.0, Color.WHITE)          # 눈 흰자
 	draw_circle(pos + Vector2(14, -8), 3.0, Color.BLACK)          # 눈동자
