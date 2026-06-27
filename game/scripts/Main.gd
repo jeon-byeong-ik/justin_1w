@@ -12,7 +12,7 @@
 extends Node2D
 
 enum State { TITLE, READY, CHARGE, AIM, FLIGHT, EVOLVE, RESULT, MATCH, SHOP, LEADERBOARD }
-enum Mode { SOLO, VERSUS, CHALLENGE }
+enum Mode { SOLO, VERSUS, CHALLENGE, DAILY }
 
 # --- 튜닝 값 ---
 const CHARGE_TIME := 3.0
@@ -67,6 +67,11 @@ var evo_stage := 0
 var region_idx := 0
 var leaderboard: Array = []  # 무한 챌린지 기록(상위 10)
 
+# 일일 도전(시드 고정)
+var daily_wind := 0.0        # 오늘의 고정 바람(날짜 시드로 결정)
+var daily_date := ""         # 마지막으로 플레이한 날짜(YYYY-MM-DD)
+var daily_best := 0.0        # 오늘의 최고 기록(날짜 바뀌면 리셋)
+
 # 대결 상태
 var current_player := 1
 var versus_dist := [0.0, 0.0]
@@ -113,6 +118,8 @@ func _ready() -> void:
 	drag_bonus = float(d.drag_bonus)
 	pmul_bonus = float(d.pmul_bonus)
 	leaderboard = d.leaderboard if d.leaderboard is Array else []
+	daily_date = str(d.daily_date)
+	daily_best = float(d.daily_best)
 	evo_stage = Evolution.stage_for_energy(lifetime_energy)
 	_enter_title()
 
@@ -135,6 +142,8 @@ func _persist() -> void:
 		"drag_bonus": drag_bonus,
 		"pmul_bonus": pmul_bonus,
 		"leaderboard": leaderboard,
+		"daily_date": daily_date,
+		"daily_best": daily_best,
 	})
 
 # 진화 단계 능력치 + 상점 영구 강화 반영
@@ -216,6 +225,10 @@ func _title_input(kc: int, mb: bool, touch: bool, px: float) -> void:
 	if kc in [KEY_5, KEY_KP_5]:
 		_enter_leaderboard()
 		return
+	if kc in [KEY_6, KEY_KP_6]:
+		mode = Mode.DAILY
+		_enter_ready()
+		return
 	var pick_solo := kc in [KEY_1, KEY_KP_1, KEY_SPACE, KEY_ENTER, KEY_KP_ENTER] or ((mb or touch) and px < MID_X)
 	var pick_versus := kc in [KEY_2, KEY_KP_2] or ((mb or touch) and px >= MID_X)
 	if pick_solo:
@@ -242,7 +255,7 @@ func _enter_title() -> void:
 	region_idx = Region.index_for(total_distance)
 	list_label.text = ""
 	center_label.text = "🦎 도마뱀 발사!"
-	hint_label.text = "[1] 혼자하기   [2] 둘이 대결   [3] 상점   [4] 무한 챌린지   [5] 리더보드"
+	hint_label.text = "[1] 혼자하기   [2] 둘이 대결   [3] 상점\n[4] 무한 챌린지   [5] 리더보드   [6] 일일 도전"
 	_refresh_hud()
 
 func _enter_ready() -> void:
@@ -262,6 +275,11 @@ func _enter_ready() -> void:
 		current_wind = 0.0   # 무한 챌린지는 무풍(기록 공정성)
 		center_label.text = ""
 		hint_label.text = "♾️ 무한 챌린지 — [탭/스페이스]로 발사! 최고 비거리에 도전"
+	elif mode == Mode.DAILY:
+		_ensure_daily()
+		current_wind = daily_wind   # 오늘은 모두 같은 바람(시드 고정)
+		center_label.text = ""
+		hint_label.text = "📅 오늘의 도전 — 바람 %s. [탭/스페이스]로 발사!" % _wind_str(daily_wind)
 	else:
 		current_wind = 0.0
 		var key_name := "A" if current_player == 1 else "L"
@@ -271,12 +289,28 @@ func _enter_ready() -> void:
 	_refresh_hud()
 
 func _wind_text() -> String:
-	if abs(current_wind) < 0.1:
-		return "   바람 없음"
-	elif current_wind > 0:
-		return "   뒷바람 +%.1f" % current_wind
+	return "   " + _wind_str(current_wind)
+
+func _wind_str(w: float) -> String:
+	if abs(w) < 0.1:
+		return "무풍"
+	elif w > 0:
+		return "뒷바람 +%.1f" % w
 	else:
-		return "   맞바람 %.1f" % current_wind
+		return "맞바람 %.1f" % w
+
+# 일일 도전: 날짜가 바뀌면 오늘 기록 리셋, 날짜 시드로 오늘의 바람 고정
+func _ensure_daily() -> void:
+	var today := Time.get_date_string_from_system()
+	if daily_date != today:
+		daily_date = today
+		daily_best = 0.0
+		_persist()
+	var dd := Time.get_date_dict_from_system()
+	var seed_val := int(dd.year) * 10000 + int(dd.month) * 100 + int(dd.day)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+	daily_wind = round(rng.randf_range(-7.0, 7.0) * 10.0) / 10.0
 
 func _enter_charge() -> void:
 	state = State.CHARGE
@@ -353,6 +387,20 @@ func _enter_result() -> void:
 			hint_label.text = "🏆 랭크 #%d 진입!   [탭] 다시 · [Esc] 타이틀" % rank
 		else:
 			hint_label.text = "랭크 #%d   [탭] 다시 · [Esc] 타이틀" % rank
+	elif mode == Mode.DAILY:
+		var improved := last_distance > daily_best
+		if improved:
+			daily_best = last_distance
+		if last_distance > best_distance:
+			best_distance = last_distance
+		_persist()
+		state = State.RESULT
+		center_label.text = "%.1f m%s" % [last_distance, perfect_txt]
+		if improved:
+			audio.play("win")
+			hint_label.text = "📅 오늘 최고 갱신! (%.1fm)   [탭] 다시 · [Esc] 타이틀" % daily_best
+		else:
+			hint_label.text = "오늘 최고 %.1fm   [탭] 다시 · [Esc] 타이틀" % daily_best
 	else:
 		versus_dist[current_player - 1] = last_distance
 		state = State.RESULT
@@ -516,6 +564,9 @@ func _refresh_hud() -> void:
 	elif mode == Mode.CHALLENGE and state in [State.READY, State.CHARGE, State.AIM, State.FLIGHT, State.RESULT]:
 		hud_label.text = "♾️ 무한 챌린지   %s   🥇 리더보드 1위 %.1fm   (내 최고 %.1fm)" % [
 			Evolution.stats(evo_stage).name, Leaderboard.best(leaderboard), best_distance]
+	elif mode == Mode.DAILY and state in [State.READY, State.CHARGE, State.AIM, State.FLIGHT, State.RESULT]:
+		hud_label.text = "📅 일일 도전 %s   바람 %s   오늘 최고 %.1fm" % [
+			daily_date, _wind_str(daily_wind), daily_best]
 	else:
 		var nxt := Evolution.energy_to_next(lifetime_energy)
 		var nxt_txt := "다음 진화 %d" % nxt if nxt > 0 else "진화 완료"

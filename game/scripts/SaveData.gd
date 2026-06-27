@@ -21,6 +21,8 @@ static func defaults() -> Dictionary:
 		"drag_bonus": 0.0,
 		"pmul_bonus": 0.0,
 		"leaderboard": [],   # 무한 챌린지 기록(상위 10)
+		"daily_date": "",    # 일일 도전: 마지막 플레이 날짜
+		"daily_best": 0.0,   # 일일 도전: 오늘의 최고 기록
 	}
 
 static func load_data() -> Dictionary:
