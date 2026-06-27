@@ -134,7 +134,8 @@ const G={
   drag_bonus:0, pmul_bonus:0, evo_stage:0, region_idx:0, leaderboard:[],
   daily_wind:0, daily_date:"", daily_best:0,
   current_player:1, versus_dist:[0,0], scores:[0,0], round_num:1, match_over:false,
-  center:"", hint:"", buttons:[]
+  center:"", hint:"", buttons:[],
+  t:0, trail:[], particles:[]
 };
 
 function persist(){ SAVE.save({wallet:G.wallet,lifetime_energy:G.lifetime_energy,best_distance:G.best_distance,
@@ -172,9 +173,13 @@ function lockAngleFly(){ const st=effStats(); const window=SWEET_WINDOW*st.sweet
   G.sweet=Math.max(0,Math.min(1,1-Math.abs(G.angle-LF.ANGLE_IDEAL)/window));
   const r=LF.compute(G.power,G.angle,G.sweet,st,G.current_wind);
   G.last_distance=r.distance; G.last_perfect=r.perfect; G.last_energy=LF.energy(r.distance,r.perfect);
-  G.state=ST.FLIGHT; G.flight_t=0; G.center=""; G.hint=""; AUDIO.play("launch"); }
+  G.state=ST.FLIGHT; G.flight_t=0; G.center=""; G.hint=""; AUDIO.play("launch");
+  G.trail=[]; spawnDust(LAUNCH_X+10,GROUND_Y-14,16,"#d8cdb4"); }
 
 function enterResult(){ AUDIO.play("land"); if(G.last_perfect) AUDIO.play("perfect");
+  const _reach=Math.min(G.last_distance*METER_TO_PX,980), _lx=LAUNCH_X+_reach;
+  spawnDust(_lx,GROUND_Y-14,18,"#d8cdb4");
+  if(G.last_perfect) spawnSparkle(_lx,GROUND_Y-70,20);
   const pt=G.last_perfect?"  ✨PERFECT":"";
   if(G.mode===MODE.SOLO){ G.wallet+=G.last_energy; G.lifetime_energy+=G.last_energy; G.total_distance+=G.last_distance;
     if(G.last_distance>G.best_distance) G.best_distance=G.last_distance;
@@ -204,6 +209,7 @@ function enterResult(){ AUDIO.play("land"); if(G.last_perfect) AUDIO.play("perfe
 }
 
 function startEvolve(){ G.state=ST.EVOLVE; G.evolve_t=0; AUDIO.play("evolve");
+  spawnSparkle(MID_X,360,34);
   G.center="EVOLVED!"; G.hint="→ "+EVO.stats(G.evo_stage).name+"   탭하여 건너뛰기"; }
 function finishEvolve(){ G.state=ST.RESULT; G.center=G.result_center; G.hint=G.result_hint; }
 
@@ -299,6 +305,7 @@ function onKey(e){ const k=e.key.toLowerCase();
 
 // ===== 업데이트 =====
 function update(dt){
+  G.t+=dt; updateParticles(dt);
   if(G.state===ST.CHARGE){ G.power=Math.max(G.power-POWER_DECAY*dt,0); G.charge_timer-=dt;
     if(G.charge_timer<=0){ G.charge_timer=0; enterAim(); } }
   else if(G.state===ST.AIM){ G.angle+=G.angle_dir*ANGLE_SWEEP_SPEED*dt;
@@ -320,13 +327,61 @@ function btn(id,label,x,y,w,h,col,fs){ return {id,label,x,y,w,h,col,fs}; }
 
 function drawSpriteFit(sp,cx,cy,maxW,maxH){ const s=Math.min(maxW/sp.naturalWidth,maxH/sp.naturalHeight);
   const w=sp.naturalWidth*s,h=sp.naturalHeight*s; ctx.drawImage(sp,cx-w/2,cy-h/2,w,h); }
-function drawLizard(x,y,scale){
-  if(IMG.has(G.evo_stage)){ drawSpriteFit(IMG.objs[G.evo_stage],x,y,80*scale,80*scale); return; }
-  const c=EVO.stats(G.evo_stage).color;
-  ctx.fillStyle=c; ctx.beginPath(); ctx.arc(x,y,20*scale,0,7); ctx.fill();
-  ctx.fillStyle=shade(c,-0.15); ctx.beginPath(); ctx.arc(x-18*scale,y+6*scale,8*scale,0,7); ctx.fill();
-  ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(x+12*scale,y-8*scale,6*scale,0,7); ctx.fill();
-  ctx.fillStyle="#000"; ctx.beginPath(); ctx.arc(x+14*scale,y-8*scale,3*scale,0,7); ctx.fill(); }
+
+// 오리지널 도마뱀(코드로 그림) — 원점 기준, 오른쪽을 바라봄
+function drawProcLizard(){
+  const c=EVO.stats(G.evo_stage).color, dark=shade(c,-0.22), light=shade(c,0.28);
+  ctx.save(); ctx.scale(0.85,0.85); ctx.lineJoin="round";
+  // 꼬리
+  ctx.fillStyle=dark; ctx.beginPath(); ctx.moveTo(-12,4);
+  ctx.quadraticCurveTo(-40,4,-48,-12); ctx.quadraticCurveTo(-34,4,-12,11); ctx.closePath(); ctx.fill();
+  // 뒷다리/앞다리
+  ctx.fillStyle=dark; for(const lx of [-9,13]){ ctx.beginPath(); ctx.ellipse(lx,15,5,9,0,0,7); ctx.fill(); }
+  // 몸통
+  ctx.fillStyle=c; ctx.beginPath(); ctx.ellipse(0,2,23,15,0,0,7); ctx.fill();
+  // 배(밝은색)
+  ctx.fillStyle=light; ctx.beginPath(); ctx.ellipse(2,8,15,7,0,0,7); ctx.fill();
+  // 등 가시
+  ctx.fillStyle=dark; for(let i=-1;i<=2;i++){ const sx=i*9; ctx.beginPath();
+    ctx.moveTo(sx-4,-9); ctx.lineTo(sx,-17); ctx.lineTo(sx+4,-9); ctx.closePath(); ctx.fill(); }
+  // 머리
+  ctx.fillStyle=c; ctx.beginPath(); ctx.ellipse(23,-4,13,12,0,0,7); ctx.fill();
+  // 눈
+  ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(29,-8,5.2,0,7); ctx.fill();
+  ctx.fillStyle="#111"; ctx.beginPath(); ctx.arc(30.5,-8,2.7,0,7); ctx.fill();
+  ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(31.4,-9,1,0,7); ctx.fill();
+  // 입
+  ctx.strokeStyle=dark; ctx.lineWidth=1.8; ctx.beginPath(); ctx.arc(31,1,4,0,Math.PI*0.55); ctx.stroke();
+  ctx.restore();
+}
+// 캐릭터 그리기 (스프라이트 또는 오리지널) + 스쿼시/회전 변형
+function drawCharacter(x,y,baseScale,opts){ opts=opts||{};
+  const sx=opts.sx||1, sy=opts.sy||1, rot=opts.rot||0;
+  ctx.save(); ctx.translate(x,y); if(rot) ctx.rotate(rot); ctx.scale(baseScale*sx, baseScale*sy);
+  if(IMG.has(G.evo_stage)){ const sp=IMG.objs[G.evo_stage]; const s=Math.min(40/sp.naturalWidth,40/sp.naturalHeight);
+    ctx.drawImage(sp,-sp.naturalWidth*s/2,-sp.naturalHeight*s/2,sp.naturalWidth*s,sp.naturalHeight*s); }
+  else drawProcLizard();
+  ctx.restore(); }
+function drawLizard(x,y,scale){ const bob=Math.sin(G.t*3)*2;
+  drawCharacter(x,y+bob,scale,{sy:1+0.04*Math.sin(G.t*6),sx:1-0.04*Math.sin(G.t*6)}); }
+
+// 충전 에너지 링
+function drawChargeAura(x,y,pf){ for(let i=0;i<3;i++){ const ph=((G.t*1.6)+i/3)%1;
+  const r=18+ph*70*(0.5+pf); ctx.strokeStyle="rgba(255,235,110,"+((1-ph)*0.55*pf).toFixed(3)+")"; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.stroke(); } }
+// 비행 잔상
+function pushTrail(x,y,rot){ G.trail.push({x,y,rot}); if(G.trail.length>8) G.trail.shift(); }
+function drawTrail(){ for(let i=0;i<G.trail.length;i++){ const p=G.trail[i]; ctx.globalAlpha=(i/G.trail.length)*0.3;
+  drawCharacter(p.x,p.y,2.0,{rot:p.rot,sx:1.25,sy:0.85}); } ctx.globalAlpha=1; }
+// 파티클(먼지/반짝임)
+function spawnDust(x,y,n,col){ for(let i=0;i<n;i++){ const a=-Math.PI/2+(Math.random()-0.5)*Math.PI*1.2, sp=60+Math.random()*150;
+  G.particles.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:0,max:0.4+Math.random()*0.35,r:3+Math.random()*5,col:col||"#d8cdb4"}); } }
+function spawnSparkle(x,y,n){ for(let i=0;i<n;i++){ const a=Math.random()*Math.PI*2, sp=70+Math.random()*180;
+  G.particles.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-50,life:0,max:0.6+Math.random()*0.5,r:2+Math.random()*3,col:"#ffe27a"}); } }
+function updateParticles(dt){ for(const p of G.particles){ p.life+=dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=520*dt; }
+  if(G.particles.length) G.particles=G.particles.filter(p=>p.life<p.max); }
+function drawParticles(){ for(const p of G.particles){ const a=Math.max(0,1-p.life/p.max); ctx.globalAlpha=a;
+  ctx.fillStyle=p.col; ctx.beginPath(); ctx.arc(p.x,p.y,p.r*(0.5+a*0.5),0,7); ctx.fill(); } ctx.globalAlpha=1; }
 function shade(hex,amt){ const n=parseInt(hex.slice(1),16); let r=(n>>16)&255,g=(n>>8)&255,b=n&255;
   r=Math.max(0,Math.min(255,r+amt*255)); g=Math.max(0,Math.min(255,g+amt*255)); b=Math.max(0,Math.min(255,b+amt*255));
   return "rgb("+(r|0)+","+(g|0)+","+(b|0)+")"; }
@@ -341,6 +396,7 @@ function render(){
   ctx.fillStyle=soloPlay?rg.sky:"#85c8eb"; ctx.fillRect(0,0,W,H);
   ctx.fillStyle=soloPlay?rg.ground:"#669e52"; ctx.fillRect(0,GROUND_Y,W,H-GROUND_Y);
   txt("🦎 도마뱀 발사!  —  제작: justin",W/2,40,24,"#fff");
+  drawParticles();
 
   // HUD
   hud();
@@ -362,10 +418,19 @@ function render(){
   ctx.fillStyle="#5a4030"; ctx.fillRect(LAUNCH_X-40,GROUND_Y-14,90,14);
   if(G.mode===MODE.VERSUS && [ST.READY,ST.CHARGE,ST.AIM,ST.FLIGHT].includes(G.state)){
     ctx.fillStyle=G.current_player===1?"#f26666":"#669af2"; ctx.beginPath(); ctx.arc(LAUNCH_X+5,GROUND_Y-90,10,0,7); ctx.fill(); }
-  let lx=LAUNCH_X, ly=GROUND_Y-26;
-  if(G.state===ST.FLIGHT){ const reach=Math.min(G.last_distance*METER_TO_PX,980); lx=LAUNCH_X+reach*G.flight_t;
-    const arc=220+Math.sin(G.angle*Math.PI/180)*160; ly=(GROUND_Y-26)-arc*Math.sin(Math.PI*G.flight_t); }
-  drawLizard(lx,ly,2.0);
+  let lx=LAUNCH_X, ly=GROUND_Y-26, asx=1, asy=1, arot=0;
+  const bob=Math.sin(G.t*3)*3;
+  if(G.state===ST.READY){ ly+=bob; asy=1+0.05*Math.sin(G.t*6); asx=2-asy; }
+  else if(G.state===ST.AIM){ ly+=bob*0.5; asy=0.95; asx=1.05; }
+  else if(G.state===ST.CHARGE){ const pf=Math.min(G.power,1.0); const amp=4+18*pf;
+    lx+=Math.sin(G.t*52)*amp*0.5; ly+=Math.sin(G.t*61)*amp*0.2;
+    asy=1-0.22*pf; asx=1+0.18*pf; drawChargeAura(LAUNCH_X,GROUND_Y-26,pf); }
+  else if(G.state===ST.FLIGHT){ const reach=Math.min(G.last_distance*METER_TO_PX,980); lx=LAUNCH_X+reach*G.flight_t;
+    const arc=220+Math.sin(G.angle*Math.PI/180)*160; ly=(GROUND_Y-26)-arc*Math.sin(Math.PI*G.flight_t);
+    const eps=0.012,t2=Math.min(1,G.flight_t+eps),x2=LAUNCH_X+reach*t2,y2=(GROUND_Y-26)-arc*Math.sin(Math.PI*t2);
+    arot=Math.atan2(y2-ly,x2-lx); const st=Math.max(0,1-G.flight_t/0.28); asx=1+0.4*st; asy=1-0.2*st;
+    pushTrail(lx,ly,arot); drawTrail(); }
+  drawCharacter(lx,ly,2.0,{sx:asx,sy:asy,rot:arot});
 
   if(G.state===ST.CHARGE){ powerBar(); timerBar(); }
   else if(G.state===ST.AIM){ powerBar(); angleIndicator(); }
