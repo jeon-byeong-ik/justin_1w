@@ -19,10 +19,11 @@ const CHARGE_TIME := 3.0
 const POWER_PER_TAP := 0.06
 const POWER_DECAY := 0.10
 const POWER_MAX := 1.2
-const ANGLE_SWEEP_SPEED := 110.0
+const ANGLE_SWEEP_SPEED := 75.0   # 튜닝: 110→75 (퍼펙트 타이밍 창 ~3.8프레임, 운→실력)
+const SWEET_WINDOW := 24.0        # 스위트스팟 반폭(도) × 진화 sweet_w
 const FLIGHT_TIME := 1.4
 const EVOLVE_TIME := 2.0
-const METER_TO_PX := 4.0
+const METER_TO_PX := 2.0          # 튜닝: 4→2 (긴 비거리도 화면 안에서 변별)
 const WIN_ROUNDS := 2
 
 # 상점 가격/효과
@@ -270,7 +271,7 @@ func _enter_aim() -> void:
 
 func _lock_angle_and_fly() -> void:
 	var stats := _effective_stats()
-	var window: float = 20.0 * float(stats.sweet_w)
+	var window: float = SWEET_WINDOW * float(stats.sweet_w)
 	sweet = clamp(1.0 - abs(angle - LaunchFormula.ANGLE_IDEAL) / window, 0.0, 1.0)
 	var result := LaunchFormula.compute(power, angle, sweet, stats, current_wind)
 	last_distance = result.distance
@@ -529,7 +530,7 @@ func _draw_power_bar() -> void:
 	var fill: float = clamp(power, 0.0, POWER_MAX) / POWER_MAX
 	var col := Color(0.95, 0.75, 0.2)
 	if power > 1.0:
-		col = Color(0.95, 0.35, 0.25)
+		col = Color(0.40, 0.85, 0.55)  # 100% 초과: 보너스 구간(초록)
 	draw_rect(Rect2(x, y, w * fill, h), col)
 	var mark := x + w * (1.0 / POWER_MAX)
 	draw_line(Vector2(mark, y - 4), Vector2(mark, y + h + 4), Color.WHITE, 2.0)
@@ -545,7 +546,7 @@ func _draw_timer_bar() -> void:
 func _draw_angle_indicator() -> void:
 	var origin := Vector2(LAUNCH_X, GROUND_Y - 26)
 	var stats := _effective_stats()
-	var window: float = 20.0 * float(stats.sweet_w)
+	var window: float = SWEET_WINDOW * float(stats.sweet_w)
 	var lo := LaunchFormula.ANGLE_IDEAL - window
 	var hi := LaunchFormula.ANGLE_IDEAL + window
 	_draw_angle_ray(origin, lo, Color(0.3, 0.9, 0.4, 0.5), 160.0)

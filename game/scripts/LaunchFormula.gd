@@ -5,22 +5,20 @@
 class_name LaunchFormula
 extends RefCounted
 
-const BASE_VELOCITY := 28.0   # 100% 파워의 기본 발사 속도(m/s)
+const BASE_VELOCITY := 34.0   # 100% 파워의 기본 발사 속도(m/s) — 튜닝(퍼펙트 ~212m)
 const GRAVITY := 9.8          # 중력 가속도
-const OVERCHARGE_GAIN := 0.10 # 오버차지(1.0~1.1) 보너스 비율
-const OVERCHARGE_PEN := 0.30  # 과충전(>1.1) 페널티 비율
+const OVERCHARGE_GAIN := 0.50 # 100% 초과분 효율(완만한 추가 보상, 절벽 없음)
 const PERFECT_MULT := 1.50    # 퍼펙트(sweet=1.0) 비거리 배수
+const PERFECT_THRESHOLD := 0.90 # 이 이상이면 퍼펙트 판정 (타이밍 창 ~3.8프레임)
 const ANGLE_IDEAL := 45.0     # 이상적 발사 각도(도)
 const BOUNCE_BASE := 0.20     # 착지 바운스 기본 비율
 
-# 오버차지 처리 (contracts §3.1)
+# 파워 효율 (contracts §3.1) — 100%까지는 선형, 초과분은 절반 효율로 가산(절벽 제거).
+# 타이머로 충전이 끝나므로 "정확히 멈추기"가 불가능 → 풀 mash를 보상하고, 스킬은 각도 타이밍에 둔다.
 static func eff_power(power: float) -> float:
 	if power <= 1.0:
 		return power
-	elif power <= 1.1:
-		return 1.0 + (power - 1.0) * (1.0 + OVERCHARGE_GAIN)
-	else:
-		return 1.0 - OVERCHARGE_PEN
+	return 1.0 + (power - 1.0) * OVERCHARGE_GAIN
 
 # stats: { p_mul, drag, boost_eff, weight, sweet_w } (Evolution.gd 제공)
 # 반환: { distance: float(m), perfect: bool }
@@ -37,7 +35,7 @@ static func compute(power: float, angle_deg: float, sweet: float,
 	var range_skill := range_boost * sweet_mult * angle_factor             # §3.7
 	var bounce := range_skill * BOUNCE_BASE / float(stats.weight)          # §3.8
 	var distance: float = max(0.0, range_skill + bounce)
-	return { "distance": distance, "perfect": sweet >= 0.95 }
+	return { "distance": distance, "perfect": sweet >= PERFECT_THRESHOLD }
 
 # 에너지(재화) 획득 (contracts §5)
 static func energy_gain(distance_m: float, perfect: bool) -> int:
