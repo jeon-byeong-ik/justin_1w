@@ -7,3 +7,6 @@ export_presets.cfg
 
 # 사용자가 직접 넣는 캐릭터 스프라이트(저작권 자산 실수 커밋 방지)
 assets/stage*.png
+assets/stage*.webp
+assets/stage*.jpg
+assets/stage*.jpeg

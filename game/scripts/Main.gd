@@ -47,11 +47,15 @@ var hud_label: Label
 # assets/stage0.png, stage1.png, stage2.png 가 있으면 자동 로드, 없으면 도형으로 폴백.
 var stage_textures: Array = [null, null, null]
 
+const STAGE_IMAGE_EXTS := [".png", ".webp", ".jpg", ".jpeg"]
+
 func _load_stage_textures() -> void:
 	for i in range(stage_textures.size()):
-		var path := "res://assets/stage%d.png" % i
-		if ResourceLoader.exists(path):
-			stage_textures[i] = load(path)
+		for ext in STAGE_IMAGE_EXTS:
+			var path := "res://assets/stage%d%s" % [i, ext]
+			if ResourceLoader.exists(path):
+				stage_textures[i] = load(path)
+				break
 
 func _ready() -> void:
 	_load_stage_textures()
