@@ -1,0 +1,24 @@
+; Godot 프로젝트 설정 — 도마뱀 발사! (제작: justin)
+; Godot 4.3+ 에서 이 폴더(game/)를 "프로젝트 가져오기"로 열어 실행하세요.
+
+config_version=5
+
+[application]
+
+config/name="도마뱀 발사!"
+config/description="게이지를 시간 안에 채워 도마뱀을 멀리 날리는 게임. 제작: justin"
+run/main_scene="res://scenes/Main.tscn"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="keep"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
