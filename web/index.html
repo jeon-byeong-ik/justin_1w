@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>🦎 도마뱀 발사! — 제작: justin</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b1020;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  canvas{touch-action:none;display:block;background:#85c8eb;
+    box-shadow:0 10px 40px rgba(0,0,0,.5);border-radius:6px;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="1280" height="720"></canvas></div>
+<script>
+"use strict";
+// ===== 도마뱀 발사! 웹 버전 — Godot 프로토타입(Main.gd 외)을 충실히 포팅 =====
+const W=1280, H=720, GROUND_Y=560, LAUNCH_X=170, MID_X=640;
+// 튜닝(밸런스 v2)
+const CHARGE_TIME=3.0, POWER_PER_TAP=0.06, POWER_DECAY=0.10, POWER_MAX=1.2;
+const ANGLE_SWEEP_SPEED=75, SWEET_WINDOW=24, FLIGHT_TIME=1.4, EVOLVE_TIME=2.0, METER_TO_PX=2.0, WIN_ROUNDS=2;
+const SHOP_SCALE_COST=300, SHOP_CORE_COST=500;
+
+// ---- 발사 공식 (contracts/launch-formula.md) ----
+const LF={
+  BASE_VELOCITY:34, GRAVITY:9.8, OVERCHARGE_GAIN:0.5, PERFECT_MULT:1.5,
+  PERFECT_THRESHOLD:0.9, ANGLE_IDEAL:45, BOUNCE_BASE:0.2,
+  eff(p){ return p<=1.0 ? p : 1.0+(p-1.0)*this.OVERCHARGE_GAIN; },
+  compute(power,angle,sweet,st,wind=0,boost=0){
+    const ep=this.eff(power);
+    const v0=this.BASE_VELOCITY*ep*st.p_mul;
+    const af=Math.cos(Math.abs(this.ANGLE_IDEAL-angle)*Math.PI/180);
+    const sm=1.0+(this.PERFECT_MULT-1.0)*sweet;
+    const rv=v0*v0*Math.sin(2*angle*Math.PI/180)/this.GRAVITY;
+    const ra=rv/st.drag;
+    const rw=ra+wind*1.5;
+    const rb=rw+boost*st.boost_eff;
+    const rs=rb*sm*af;
+    const bn=rs*this.BOUNCE_BASE/st.weight;
+    return { distance:Math.max(0,rs+bn), perfect: sweet>=this.PERFECT_THRESHOLD };
+  },
+  energy(d,perfect){ return Math.floor(Math.floor(d/2)*(perfect?1.5:1.0)); }
+};
+
+// ---- 진화 (Evolution.gd) ----
+const EVO={
+  STAGES:[
+    {name:"리지",   threshold:0,    p_mul:1.00, drag:1.00, boost_eff:1.00, weight:1.00, sweet_w:1.00, color:"#73c75c"},
+    {name:"모토마", threshold:1000, p_mul:1.25, drag:0.90, boost_eff:1.10, weight:1.15, sweet_w:1.10, color:"#4db3f2"},
+    {name:"미라이돈",threshold:6000, p_mul:1.60, drag:0.75, boost_eff:1.30, weight:1.30, sweet_w:1.20, color:"#d959f2"},
+  ],
+  stageFor(e){ let s=0; for(let i=0;i<this.STAGES.length;i++) if(e>=this.STAGES[i].threshold) s=i; return s; },
+  stats(i){ return this.STAGES[Math.max(0,Math.min(this.STAGES.length-1,i))]; },
+  toNext(e){ const s=this.stageFor(e); return s>=this.STAGES.length-1 ? 0 : this.STAGES[s+1].threshold-e; }
+};
+
+// ---- 지역 (Region.gd) ----
+const REG={
+  LIST:[
+    {name:"🌳 풀숲 들판",   threshold:0,    wind_min:0,  wind_max:0,  sky:"#85c8eb", ground:"#669e52"},
+    {name:"🏜️ 메마른 협곡", threshold:500,  wind_min:-5, wind_max:5,  sky:"#d9b373", ground:"#9e7a47"},
+    {name:"☁️ 구름 바다",   threshold:2000, wind_min:-3, wind_max:7,  sky:"#b3ccf2", ground:"#c7d1e6"},
+    {name:"🌌 성층권 너머", threshold:8000, wind_min:-8, wind_max:8,  sky:"#1a1438", ground:"#2e294d"},
+  ],
+  indexFor(d){ let i=0; for(let k=0;k<this.LIST.length;k++) if(d>=this.LIST[k].threshold) i=k; return i; },
+  get(i){ return this.LIST[Math.max(0,Math.min(this.LIST.length-1,i))]; }
+};
+
+// ---- 리더보드 (Leaderboard.gd) ----
+const LB={
+  MAX:10,
+  add(list,e){ const l=list.slice(); l.push(e); l.sort((a,b)=>b.dist-a.dist); return l.slice(0,this.MAX); },
+  rankOf(list,d){ let r=1; for(const e of list) if(e.dist>d) r++; return r; },
+  best(list){ let b=0; for(const e of list) b=Math.max(b,e.dist); return b; }
+};
+
+// ---- 저장 (localStorage) ----
+const SAVE={
+  KEY:"lizard_launch_save_v1",
+  defaults(){ return {wallet:0,lifetime_energy:0,best_distance:0,total_distance:0,
+    drag_bonus:0,pmul_bonus:0,leaderboard:[],daily_date:"",daily_best:0}; },
+  load(){ const d=this.defaults(); try{ const r=JSON.parse(localStorage.getItem(this.KEY)||"{}");
+    for(const k in d) if(k in r) d[k]=r[k]; }catch(e){} return d; },
+  save(d){ try{ localStorage.setItem(this.KEY, JSON.stringify(d)); }catch(e){} }
+};
+
+// ---- 사운드 (WebAudio 절차적) ----
+const AUDIO={
+  ctx:null,
+  init(){ if(this.ctx) { if(this.ctx.state==="suspended") this.ctx.resume(); return; }
+    try{ this.ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} },
+  play(name){ if(!this.ctx) return; const t=this.ctx.currentTime;
+    const cfg={tap:[520,520,0.05,0.22],launch:[180,720,0.28,0.35],perfect:[1320,1320,0.18,0.35],
+      land:[140,90,0.14,0.35],evolve:[330,1200,0.7,0.4],win:[880,1100,0.35,0.35]}[name];
+    if(!cfg) return; const [f0,f1,dur,vol]=cfg;
+    const o=this.ctx.createOscillator(), g=this.ctx.createGain();
+    o.connect(g); g.connect(this.ctx.destination); o.type="square";
+    o.frequency.setValueAtTime(f0,t); o.frequency.linearRampToValueAtTime(f1,t+dur);
+    g.gain.setValueAtTime(vol,t); g.gain.linearRampToValueAtTime(0.0001,t+dur);
+    o.start(t); o.stop(t+dur+0.02);
+  }
+};
+
+// 시드 PRNG (일일 도전)
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+function pad2(n){ return (n<10?"0":"")+n; }
+
+// ===== 게임 상태 =====
+const ST={TITLE:0,READY:1,CHARGE:2,AIM:3,FLIGHT:4,EVOLVE:5,RESULT:6,MATCH:7,SHOP:8,LEADERBOARD:9};
+const MODE={SOLO:0,VERSUS:1,CHALLENGE:2,DAILY:3};
+const G={
+  state:ST.TITLE, mode:MODE.SOLO,
+  power:0, charge_timer:0, angle:0, angle_dir:1, sweet:0, flight_t:0, current_wind:0,
+  last_distance:0, last_perfect:false, last_energy:0, evolve_t:0,
+  result_center:"", result_hint:"",
+  wallet:0, lifetime_energy:0, best_distance:0, total_distance:0,
+  drag_bonus:0, pmul_bonus:0, evo_stage:0, region_idx:0, leaderboard:[],
+  daily_wind:0, daily_date:"", daily_best:0,
+  current_player:1, versus_dist:[0,0], scores:[0,0], round_num:1, match_over:false,
+  center:"", hint:"", buttons:[]
+};
+
+function persist(){ SAVE.save({wallet:G.wallet,lifetime_energy:G.lifetime_energy,best_distance:G.best_distance,
+  total_distance:G.total_distance,drag_bonus:G.drag_bonus,pmul_bonus:G.pmul_bonus,
+  leaderboard:G.leaderboard,daily_date:G.daily_date,daily_best:G.daily_best}); }
+
+function effStats(){ const s=Object.assign({},EVO.stats(G.evo_stage));
+  s.drag=Math.max(0.5,s.drag-G.drag_bonus); s.p_mul=s.p_mul+G.pmul_bonus; return s; }
+
+function windStr(w){ if(Math.abs(w)<0.1) return "무풍"; return w>0?("뒷바람 +"+w.toFixed(1)):("맞바람 "+w.toFixed(1)); }
+
+// ---- 상태 전이 ----
+function enterTitle(){ G.state=ST.TITLE; G.evo_stage=EVO.stageFor(G.lifetime_energy);
+  G.region_idx=REG.indexFor(G.total_distance);
+  G.center="🦎 도마뱀 발사!"; G.hint="제작: justin — 원하는 모드를 누르세요"; }
+
+function enterReady(){ G.state=ST.READY; G.power=0; G.charge_timer=0; G.angle=0; G.sweet=0;
+  if(G.mode===MODE.SOLO){ G.region_idx=REG.indexFor(G.total_distance); const rg=REG.get(G.region_idx);
+    G.current_wind=rg.wind_min+Math.random()*(rg.wind_max-rg.wind_min);
+    G.center=""; G.hint="화면을 탭해서 발사 시작!   "+windStr(G.current_wind);
+  } else if(G.mode===MODE.CHALLENGE){ G.current_wind=0; G.center="";
+    G.hint="♾️ 무한 챌린지 — 탭으로 발사! 최고 비거리에 도전";
+  } else if(G.mode===MODE.DAILY){ ensureDaily(); G.current_wind=G.daily_wind; G.center="";
+    G.hint="📅 오늘의 도전 — 바람 "+windStr(G.daily_wind)+". 탭으로 발사!";
+  } else { G.current_wind=0; const side=G.current_player===1?"왼쪽":"오른쪽";
+    G.center="P"+G.current_player+" 준비!"; G.hint="P"+G.current_player+" 차례 — 화면 "+side+"을 연타해서 시작";
+  }
+}
+
+function enterCharge(){ G.state=ST.CHARGE; G.power=0; G.charge_timer=CHARGE_TIME; G.center="";
+  G.hint="연타해서 파워를 채워라! (시간 끝나면 각도 단계)"; }
+function enterAim(){ G.state=ST.AIM; G.angle=0; G.angle_dir=1; G.hint="탭해서 각도 확정! 45° 초록 스위트스팟이 퍼펙트"; }
+
+function lockAngleFly(){ const st=effStats(); const window=SWEET_WINDOW*st.sweet_w;
+  G.sweet=Math.max(0,Math.min(1,1-Math.abs(G.angle-LF.ANGLE_IDEAL)/window));
+  const r=LF.compute(G.power,G.angle,G.sweet,st,G.current_wind);
+  G.last_distance=r.distance; G.last_perfect=r.perfect; G.last_energy=LF.energy(r.distance,r.perfect);
+  G.state=ST.FLIGHT; G.flight_t=0; G.center=""; G.hint=""; AUDIO.play("launch"); }
+
+function enterResult(){ AUDIO.play("land"); if(G.last_perfect) AUDIO.play("perfect");
+  const pt=G.last_perfect?"  ✨PERFECT":"";
+  if(G.mode===MODE.SOLO){ G.wallet+=G.last_energy; G.lifetime_energy+=G.last_energy; G.total_distance+=G.last_distance;
+    if(G.last_distance>G.best_distance) G.best_distance=G.last_distance;
+    const ns=EVO.stageFor(G.lifetime_energy); const evolved=ns>G.evo_stage;
+    const newly=REG.indexFor(G.total_distance)>G.region_idx;
+    G.evo_stage=ns; G.region_idx=REG.indexFor(G.total_distance); persist();
+    G.result_center=G.last_distance.toFixed(1)+" m"+pt;
+    G.result_hint=newly?("🗺️ 새 지역 해금! "+REG.get(G.region_idx).name+"   탭하여 계속"):("+"+G.last_energy+" 에너지   탭하여 다시하기");
+    if(evolved){ startEvolve(); return; }
+    G.state=ST.RESULT; G.center=G.result_center; G.hint=G.result_hint;
+  } else if(G.mode===MODE.CHALLENGE){ if(G.last_distance>G.best_distance) G.best_distance=G.last_distance;
+    const rank=LB.rankOf(G.leaderboard,G.last_distance);
+    G.leaderboard=LB.add(G.leaderboard,{dist:G.last_distance,perfect:G.last_perfect,stage:G.evo_stage,date:todayStr()});
+    persist(); G.state=ST.RESULT; G.center=G.last_distance.toFixed(1)+" m"+pt;
+    if(rank===1){ AUDIO.play("win"); G.hint="🥇 신기록 1위!   탭 다시 · 좌상단 ✕ 타이틀"; }
+    else if(rank<=LB.MAX){ G.hint="🏆 랭크 #"+rank+" 진입!   탭 다시 · ✕ 타이틀"; }
+    else G.hint="랭크 #"+rank+"   탭 다시 · ✕ 타이틀";
+  } else if(G.mode===MODE.DAILY){ const improved=G.last_distance>G.daily_best;
+    if(improved) G.daily_best=G.last_distance; if(G.last_distance>G.best_distance) G.best_distance=G.last_distance;
+    persist(); G.state=ST.RESULT; G.center=G.last_distance.toFixed(1)+" m"+pt;
+    if(improved){ AUDIO.play("win"); G.hint="📅 오늘 최고 갱신! ("+G.daily_best.toFixed(1)+"m)   탭 다시 · ✕ 타이틀"; }
+    else G.hint="오늘 최고 "+G.daily_best.toFixed(1)+"m   탭 다시 · ✕ 타이틀";
+  } else { G.versus_dist[G.current_player-1]=G.last_distance; G.state=ST.RESULT;
+    G.center="P"+G.current_player+" : "+G.last_distance.toFixed(1)+" m"+pt;
+    G.hint=G.current_player===1?"오른쪽을 탭 → P2 차례로":"탭하여 라운드 결과 보기";
+  }
+}
+
+function startEvolve(){ G.state=ST.EVOLVE; G.evolve_t=0; AUDIO.play("evolve");
+  G.center="EVOLVED!"; G.hint="→ "+EVO.stats(G.evo_stage).name+"   탭하여 건너뛰기"; }
+function finishEvolve(){ G.state=ST.RESULT; G.center=G.result_center; G.hint=G.result_hint; }
+
+function advanceResult(){ if(G.mode!==MODE.VERSUS){ enterReady(); }
+  else if(G.current_player===1){ G.current_player=2; enterReady(); } else resolveRound(); }
+
+function startVersus(){ G.scores=[0,0]; G.round_num=1; G.current_player=1; G.versus_dist=[0,0]; G.match_over=false; enterReady(); }
+function resolveRound(){ const d1=G.versus_dist[0], d2=G.versus_dist[1]; let winner=0;
+  if(d1>d2){winner=1;G.scores[0]++;} else if(d2>d1){winner=2;G.scores[1]++;}
+  G.state=ST.MATCH; G.match_over=G.scores[0]>=WIN_ROUNDS||G.scores[1]>=WIN_ROUNDS;
+  const head=winner===0?"무승부!":("P"+winner+" 라운드 승!");
+  G.center=head+"\nP1 "+d1.toFixed(1)+"m   vs   P2 "+d2.toFixed(1)+"m";
+  if(G.match_over){ const champ=G.scores[0]>G.scores[1]?1:2; AUDIO.play("win");
+    G.hint="🏆 최종 승자 P"+champ+"!  ("+G.scores[0]+":"+G.scores[1]+")   탭 리매치 · ✕ 타이틀";
+  } else G.hint="스코어 P1 "+G.scores[0]+" : "+G.scores[1]+" P2   탭하여 다음 라운드";
+}
+function advanceMatch(){ if(G.match_over) startVersus();
+  else { G.round_num++; G.current_player=1; G.versus_dist=[0,0]; enterReady(); } }
+
+function enterShop(){ G.state=ST.SHOP; G.center="🛒 상점"; G.hint="영구 강화를 구매하세요"; }
+function buy(item){ const cost=item==="scale"?SHOP_SCALE_COST:SHOP_CORE_COST;
+  if(G.wallet<cost){ AUDIO.play("land"); G.center="🛒 상점 — 에너지 부족!"; return; }
+  G.wallet-=cost; if(item==="scale") G.drag_bonus+=0.02; else G.pmul_bonus+=0.05;
+  AUDIO.play("perfect"); persist(); G.center="🛒 상점 — 구매 완료!"; }
+
+function enterLeaderboard(){ G.state=ST.LEADERBOARD; G.center="🏆 무한 챌린지 리더보드"; G.hint="아래 버튼으로 시작 · ✕ 타이틀"; }
+
+function todayStr(){ const d=new Date(); return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
+function ensureDaily(){ const today=todayStr();
+  if(G.daily_date!==today){ G.daily_date=today; G.daily_best=0; persist(); }
+  const d=new Date(); const seed=d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+  const rng=mulberry32(seed); G.daily_wind=Math.round((rng()*14-7)*10)/10; }
+
+// ===== 입력 =====
+function actGameplay(pid){ if(G.mode===MODE.VERSUS && pid!==G.current_player) return;
+  if(G.state===ST.READY) enterCharge();
+  else if(G.state===ST.CHARGE){ G.power=Math.min(G.power+POWER_PER_TAP,POWER_MAX); AUDIO.play("tap"); }
+  else if(G.state===ST.AIM) lockAngleFly(); }
+
+function handleTap(v){
+  // 버튼 우선
+  for(const b of G.buttons){ if(v.x>=b.x&&v.x<=b.x+b.w&&v.y>=b.y&&v.y<=b.y+b.h){ onButton(b.id); return; } }
+  switch(G.state){
+    case ST.EVOLVE: finishEvolve(); break;
+    case ST.RESULT: advanceResult(); break;
+    case ST.MATCH: advanceMatch(); break;
+    case ST.READY: case ST.CHARGE: case ST.AIM:
+      actGameplay(G.mode!==MODE.VERSUS?1:(v.x<MID_X?1:2)); break;
+  }
+}
+function onButton(id){ switch(id){
+  case "solo": G.mode=MODE.SOLO; enterReady(); break;
+  case "versus": G.mode=MODE.VERSUS; startVersus(); break;
+  case "shop": enterShop(); break;
+  case "challenge": G.mode=MODE.CHALLENGE; enterReady(); break;
+  case "leaderboard": enterLeaderboard(); break;
+  case "daily": G.mode=MODE.DAILY; enterReady(); break;
+  case "buy_scale": buy("scale"); break;
+  case "buy_core": buy("core"); break;
+  case "lb_start": G.mode=MODE.CHALLENGE; enterReady(); break;
+  case "title": enterTitle(); break;
+}}
+
+function onKey(e){ const k=e.key.toLowerCase();
+  if(k==="escape"){ enterTitle(); return; }
+  if(G.state===ST.TITLE){ const m={"1":"solo","2":"versus","3":"shop","4":"challenge","5":"leaderboard","6":"daily"}[k]; if(m) onButton(m); return; }
+  if(G.state===ST.SHOP){ if(k==="1") buy("scale"); else if(k==="2") buy("core"); return; }
+  if(G.state===ST.LEADERBOARD){ if(k===" "||k==="enter") onButton("lb_start"); return; }
+  if(G.state===ST.EVOLVE){ finishEvolve(); return; }
+  if(G.state===ST.RESULT){ if(k===" "||k==="enter"||k==="a"||k==="l") advanceResult(); return; }
+  if(G.state===ST.MATCH){ if(k===" "||k==="enter"||k==="a"||k==="l") advanceMatch(); return; }
+  // 게임플레이
+  let pid=0; if(k==="a") pid=1; else if(k==="l") pid=2; else if(k===" "||k==="enter") pid=(G.mode===MODE.VERSUS?G.current_player:1);
+  if(pid) actGameplay(pid);
+}
+
+// ===== 업데이트 =====
+function update(dt){
+  if(G.state===ST.CHARGE){ G.power=Math.max(G.power-POWER_DECAY*dt,0); G.charge_timer-=dt;
+    if(G.charge_timer<=0){ G.charge_timer=0; enterAim(); } }
+  else if(G.state===ST.AIM){ G.angle+=G.angle_dir*ANGLE_SWEEP_SPEED*dt;
+    if(G.angle>=90){G.angle=90;G.angle_dir=-1;} else if(G.angle<=0){G.angle=0;G.angle_dir=1;} }
+  else if(G.state===ST.FLIGHT){ G.flight_t+=dt/FLIGHT_TIME; if(G.flight_t>=1){G.flight_t=1; enterResult();} }
+  else if(G.state===ST.EVOLVE){ G.evolve_t+=dt; if(G.evolve_t>=EVOLVE_TIME) finishEvolve(); }
+}
+
+// ===== 렌더 =====
+const canvas=document.getElementById("c"), ctx=canvas.getContext("2d");
+function txt(s,x,y,size,color,align="center",weight="bold"){ ctx.fillStyle=color; ctx.textAlign=align;
+  ctx.textBaseline="alphabetic"; ctx.font=weight+" "+size+"px -apple-system,'Noto Sans KR',sans-serif"; ctx.fillText(s,x,y); }
+function rrect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+function drawBtn(b){ ctx.fillStyle=b.col||"rgba(20,30,55,.82)"; rrect(b.x,b.y,b.w,b.h,14); ctx.fill();
+  ctx.lineWidth=2; ctx.strokeStyle="rgba(255,255,255,.35)"; ctx.stroke();
+  txt(b.label,b.x+b.w/2,b.y+b.h/2+Math.round((b.fs||30)*0.35),b.fs||30,"#fff"); }
+function btn(id,label,x,y,w,h,col,fs){ return {id,label,x,y,w,h,col,fs}; }
+
+function drawLizard(x,y,scale){ const c=EVO.stats(G.evo_stage).color;
+  ctx.fillStyle=c; ctx.beginPath(); ctx.arc(x,y,20*scale,0,7); ctx.fill();
+  ctx.fillStyle=shade(c,-0.15); ctx.beginPath(); ctx.arc(x-18*scale,y+6*scale,8*scale,0,7); ctx.fill();
+  ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(x+12*scale,y-8*scale,6*scale,0,7); ctx.fill();
+  ctx.fillStyle="#000"; ctx.beginPath(); ctx.arc(x+14*scale,y-8*scale,3*scale,0,7); ctx.fill(); }
+function shade(hex,amt){ const n=parseInt(hex.slice(1),16); let r=(n>>16)&255,g=(n>>8)&255,b=n&255;
+  r=Math.max(0,Math.min(255,r+amt*255)); g=Math.max(0,Math.min(255,g+amt*255)); b=Math.max(0,Math.min(255,b+amt*255));
+  return "rgb("+(r|0)+","+(g|0)+","+(b|0)+")"; }
+
+function angleRay(ox,oy,deg,color,len){ const dx=Math.cos(deg*Math.PI/180), dy=-Math.sin(deg*Math.PI/180);
+  ctx.strokeStyle=color; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(ox,oy); ctx.lineTo(ox+dx*len,oy+dy*len); ctx.stroke(); }
+
+function render(){
+  G.buttons=[];
+  const rg=REG.get(G.region_idx);
+  const soloPlay=G.mode===MODE.SOLO && [ST.READY,ST.CHARGE,ST.AIM,ST.FLIGHT,ST.EVOLVE,ST.RESULT].includes(G.state);
+  ctx.fillStyle=soloPlay?rg.sky:"#85c8eb"; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=soloPlay?rg.ground:"#669e52"; ctx.fillRect(0,GROUND_Y,W,H-GROUND_Y);
+  txt("🦎 도마뱀 발사!  —  제작: justin",W/2,40,24,"#fff");
+
+  // HUD
+  hud();
+
+  if(G.state===ST.TITLE){ drawLizard(MID_X,250,2.2); titleButtons(); txt(G.center,W/2,150,52,"#fff");
+    txt(G.hint,W/2,690,22,"rgba(255,255,255,.9)"); drawButtons(); return; }
+  if(G.state===ST.SHOP){ drawLizard(MID_X,300,2.0); txt(G.center,W/2,140,46,"#fff"); shopButtons();
+    txt("💠 보유 에너지 "+G.wallet,W/2,200,28,"#ffe");
+    closeButton(); drawButtons(); return; }
+  if(G.state===ST.LEADERBOARD){ txt(G.center,W/2,110,40,"#fff"); leaderboardList();
+    G.buttons.push(btn("lb_start","♾️ 무한 챌린지 시작",440,610,400,64,"rgba(30,80,40,.85)",28)); closeButton();
+    drawButtons(); return; }
+  if(G.state===ST.EVOLVE){ const flash=0.5+0.5*Math.sin(G.evolve_t*18); ctx.fillStyle="rgba(255,255,255,"+(flash*0.6)+")";
+    ctx.fillRect(0,0,W,H); const pulse=1.0+0.6*Math.sin(G.evolve_t*6); drawLizard(MID_X,360,pulse*2);
+    txt(G.center,W/2,180,60,"#fff"); txt(G.hint,W/2,690,26,"rgba(255,255,255,.9)"); return; }
+
+  // 발사대
+  ctx.fillStyle="#5a4030"; ctx.fillRect(LAUNCH_X-40,GROUND_Y-14,90,14);
+  if(G.mode===MODE.VERSUS && [ST.READY,ST.CHARGE,ST.AIM,ST.FLIGHT].includes(G.state)){
+    ctx.fillStyle=G.current_player===1?"#f26666":"#669af2"; ctx.beginPath(); ctx.arc(LAUNCH_X+5,GROUND_Y-90,10,0,7); ctx.fill(); }
+  let lx=LAUNCH_X, ly=GROUND_Y-26;
+  if(G.state===ST.FLIGHT){ const reach=Math.min(G.last_distance*METER_TO_PX,980); lx=LAUNCH_X+reach*G.flight_t;
+    const arc=220+Math.sin(G.angle*Math.PI/180)*160; ly=(GROUND_Y-26)-arc*Math.sin(Math.PI*G.flight_t); }
+  drawLizard(lx,ly,2.0);
+
+  if(G.state===ST.CHARGE){ powerBar(); timerBar(); }
+  else if(G.state===ST.AIM){ powerBar(); angleIndicator(); }
+
+  // 중앙/힌트 텍스트
+  if(G.center){ const lines=G.center.split("\n"); for(let i=0;i<lines.length;i++) txt(lines[i],W/2,260+i*60,48,"#fff"); }
+  if(G.hint) txt(G.hint,W/2,690,25,"rgba(255,255,255,.92)");
+
+  // 메뉴성 상태엔 ✕
+  if([ST.RESULT,ST.MATCH].includes(G.state)) closeButton();
+  drawButtons();
+}
+
+function hud(){ ctx.textAlign="left";
+  let s="";
+  if(G.mode===MODE.VERSUS && [ST.READY,ST.CHARGE,ST.AIM,ST.FLIGHT,ST.RESULT,ST.MATCH].includes(G.state))
+    s="VERSUS · R"+G.round_num+" (3판 2선승)   P1 "+G.scores[0]+" : "+G.scores[1]+" P2   ▶ 현재 P"+G.current_player;
+  else if(G.mode===MODE.CHALLENGE && [ST.READY,ST.CHARGE,ST.AIM,ST.FLIGHT,ST.RESULT].includes(G.state))
+    s="♾️ 무한 챌린지   "+EVO.stats(G.evo_stage).name+"   🥇 1위 "+LB.best(G.leaderboard).toFixed(1)+"m   (내 최고 "+G.best_distance.toFixed(1)+"m)";
+  else if(G.mode===MODE.DAILY && [ST.READY,ST.CHARGE,ST.AIM,ST.FLIGHT,ST.RESULT].includes(G.state))
+    s="📅 일일 도전 "+G.daily_date+"   바람 "+windStr(G.daily_wind)+"   오늘 최고 "+G.daily_best.toFixed(1)+"m";
+  else { const nxt=EVO.toNext(G.lifetime_energy); const nt=nxt>0?("다음 진화 "+nxt):"진화 완료";
+    let dots=""; for(let i=0;i<EVO.STAGES.length;i++) dots+= i<=G.evo_stage?"●":"○";
+    s="진화 "+dots+" "+EVO.stats(G.evo_stage).name+"   💠 "+G.wallet+" ("+nt+")   🏅 "+G.best_distance.toFixed(1)+"m   📍 "+REG.get(G.region_idx).name; }
+  txt(s,24,78,22,"#eef",  "left");
+}
+
+function powerBar(){ const x=200,y=660,w=880,h=26; ctx.fillStyle="rgba(0,0,0,.35)"; ctx.fillRect(x,y,w,h);
+  const fill=Math.min(G.power,POWER_MAX)/POWER_MAX; ctx.fillStyle=G.power>1.0?"#66d98c":"#f2c233"; ctx.fillRect(x,y,w*fill,h);
+  const mark=x+w*(1/POWER_MAX); ctx.strokeStyle="#fff"; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(mark,y-4); ctx.lineTo(mark,y+h+4); ctx.stroke(); }
+function timerBar(){ const x=200,y=694,w=880; ctx.fillStyle="rgba(0,0,0,.25)"; ctx.fillRect(x,y,w,8);
+  const f=Math.max(0,Math.min(1,G.charge_timer/CHARGE_TIME)); ctx.fillStyle="rgba(255,255,255,.85)"; ctx.fillRect(x,y,w*f,8); }
+function angleIndicator(){ const ox=LAUNCH_X,oy=GROUND_Y-26; const st=effStats(); const win=SWEET_WINDOW*st.sweet_w;
+  angleRay(ox,oy,LF.ANGLE_IDEAL-win,"rgba(76,230,102,.5)",160); angleRay(ox,oy,LF.ANGLE_IDEAL+win,"rgba(76,230,102,.5)",160);
+  angleRay(ox,oy,LF.ANGLE_IDEAL,"rgba(76,230,102,.8)",175); angleRay(ox,oy,G.angle,"#f24033",200); }
+
+function titleButtons(){ const labels=[["solo","혼자하기"],["versus","둘이 대결"],["shop","상점"],
+  ["challenge","무한 챌린지"],["leaderboard","리더보드"],["daily","일일 도전"]];
+  const bw=380,bh=80,gx=40,gy=24, x0=W/2-bw-gx/2, y0=360;
+  for(let i=0;i<labels.length;i++){ const col=i%2, row=(i/2)|0;
+    G.buttons.push(btn(labels[i][0],labels[i][1],x0+col*(bw+gx),y0+row*(bh+gy),bw,bh,"rgba(20,30,55,.82)",30)); } }
+function shopButtons(){ G.buttons.push(btn("buy_scale","가벼운 비늘 · 공기저항↓  ("+SHOP_SCALE_COST+")",300,330,680,90,"rgba(20,40,60,.85)",30));
+  G.buttons.push(btn("buy_core","강화 코어 · 파워↑  ("+SHOP_CORE_COST+")",300,440,680,90,"rgba(40,30,60,.85)",30)); }
+function closeButton(){ G.buttons.push(btn("title","✕ 타이틀",24,20,150,56,"rgba(0,0,0,.45)",24)); }
+function leaderboardList(){ ctx.textAlign="left";
+  if(G.leaderboard.length===0){ txt("아직 기록이 없어요. 무한 챌린지로 첫 발사를 날려보세요!",W/2,330,26,"#fff"); return; }
+  for(let i=0;i<G.leaderboard.length;i++){ const e=G.leaderboard[i]; const star=e.perfect?" ✨":"";
+    const nm=EVO.stats(e.stage).name; const y=180+i*40;
+    txt((i+1)+".",360,y,26,"#ffe","left"); txt(e.dist.toFixed(1)+" m"+star,420,y,26,"#fff","left");
+    txt("["+nm+"]  "+(e.date||""),660,y,22,"rgba(255,255,255,.8)","left"); } }
+function drawButtons(){ for(const b of G.buttons) drawBtn(b); }
+
+// ===== 루프 / 입력 바인딩 =====
+let last=0;
+function loop(ts){ const dt=Math.min((ts-last)/1000||0,0.05); last=ts; update(dt); render(); requestAnimationFrame(loop); }
+
+function toVirtual(cx,cy){ const r=canvas.getBoundingClientRect(); return {x:(cx-r.left)/r.width*W, y:(cy-r.top)/r.height*H}; }
+canvas.addEventListener("pointerdown",e=>{ e.preventDefault(); AUDIO.init(); handleTap(toVirtual(e.clientX,e.clientY)); },{passive:false});
+window.addEventListener("keydown",e=>{ if([" ","arrowup","arrowdown"].includes(e.key.toLowerCase())) e.preventDefault(); onKey(e); });
+function fit(){ const s=Math.min(window.innerWidth/W, window.innerHeight/H); canvas.style.width=(W*s)+"px"; canvas.style.height=(H*s)+"px"; }
+window.addEventListener("resize",fit);
+
+// 시작
+(function init(){ const d=SAVE.load(); G.wallet=d.wallet|0; G.lifetime_energy=d.lifetime_energy|0;
+  G.best_distance=+d.best_distance||0; G.total_distance=+d.total_distance||0; G.drag_bonus=+d.drag_bonus||0;
+  G.pmul_bonus=+d.pmul_bonus||0; G.leaderboard=Array.isArray(d.leaderboard)?d.leaderboard:[];
+  G.daily_date=d.daily_date||""; G.daily_best=+d.daily_best||0; G.evo_stage=EVO.stageFor(G.lifetime_energy);
+  enterTitle(); fit(); requestAnimationFrame(loop); })();
+</script>
+</body>
+</html>
