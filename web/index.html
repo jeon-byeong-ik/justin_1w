@@ -104,13 +104,26 @@ const AUDIO={
   }
 };
 
+// ---- 캐릭터 이미지 (이 기기 브라우저에만 저장 — 저장소/배포에 포함 안 됨) ----
+const IMG={
+  KEY:"lizard_imgs_v1", objs:[null,null,null],
+  load(){ try{ const a=JSON.parse(localStorage.getItem(this.KEY)||"[]");
+    for(let i=0;i<3;i++) if(a[i]) this._mk(i,a[i]); }catch(e){} },
+  _mk(i,url){ const im=new Image(); im.src=url; this.objs[i]=im; },
+  _store(){ const a=[]; for(let i=0;i<3;i++) a[i]=this.objs[i]?this.objs[i].src:null;
+    try{ localStorage.setItem(this.KEY,JSON.stringify(a)); }catch(e){ alert("이미지 저장 공간이 부족해요(더 작은 이미지를 써보세요)."); } },
+  set(i,url){ this._mk(i,url); this._store(); },
+  clearAll(){ this.objs=[null,null,null]; try{ localStorage.removeItem(this.KEY); }catch(e){} },
+  has(i){ const s=this.objs[i]; return s && s.complete && s.naturalWidth>0; }
+};
+
 // 시드 PRNG (일일 도전)
 function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
   t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
 function pad2(n){ return (n<10?"0":"")+n; }
 
 // ===== 게임 상태 =====
-const ST={TITLE:0,READY:1,CHARGE:2,AIM:3,FLIGHT:4,EVOLVE:5,RESULT:6,MATCH:7,SHOP:8,LEADERBOARD:9};
+const ST={TITLE:0,READY:1,CHARGE:2,AIM:3,FLIGHT:4,EVOLVE:5,RESULT:6,MATCH:7,SHOP:8,LEADERBOARD:9,IMAGES:10};
 const MODE={SOLO:0,VERSUS:1,CHALLENGE:2,DAILY:3};
 const G={
   state:ST.TITLE, mode:MODE.SOLO,
@@ -251,12 +264,29 @@ function onButton(id){ switch(id){
   case "buy_scale": buy("scale"); break;
   case "buy_core": buy("core"); break;
   case "lb_start": G.mode=MODE.CHALLENGE; enterReady(); break;
+  case "images": G.state=ST.IMAGES; G.center=""; G.hint=""; break;
+  case "img0": pickImage(0); break;
+  case "img1": pickImage(1); break;
+  case "img2": pickImage(2); break;
+  case "img_clear": IMG.clearAll(); break;
   case "title": enterTitle(); break;
 }}
+
+// 파일(사진) 선택 → 해당 진화 단계 이미지로 설정
+const fileInput=document.createElement("input");
+fileInput.type="file"; fileInput.accept="image/*"; fileInput.style.display="none";
+document.body.appendChild(fileInput);
+let pendingStage=-1;
+fileInput.addEventListener("change",()=>{ const f=fileInput.files&&fileInput.files[0];
+  if(f && pendingStage>=0){ const rd=new FileReader(); const st=pendingStage;
+    rd.onload=()=>IMG.set(st,rd.result); rd.readAsDataURL(f); }
+  fileInput.value=""; pendingStage=-1; });
+function pickImage(stage){ pendingStage=stage; fileInput.click(); }
 
 function onKey(e){ const k=e.key.toLowerCase();
   if(k==="escape"){ enterTitle(); return; }
   if(G.state===ST.TITLE){ const m={"1":"solo","2":"versus","3":"shop","4":"challenge","5":"leaderboard","6":"daily"}[k]; if(m) onButton(m); return; }
+  if(G.state===ST.IMAGES){ return; }
   if(G.state===ST.SHOP){ if(k==="1") buy("scale"); else if(k==="2") buy("core"); return; }
   if(G.state===ST.LEADERBOARD){ if(k===" "||k==="enter") onButton("lb_start"); return; }
   if(G.state===ST.EVOLVE){ finishEvolve(); return; }
@@ -288,7 +318,11 @@ function drawBtn(b){ ctx.fillStyle=b.col||"rgba(20,30,55,.82)"; rrect(b.x,b.y,b.
   txt(b.label,b.x+b.w/2,b.y+b.h/2+Math.round((b.fs||30)*0.35),b.fs||30,"#fff"); }
 function btn(id,label,x,y,w,h,col,fs){ return {id,label,x,y,w,h,col,fs}; }
 
-function drawLizard(x,y,scale){ const c=EVO.stats(G.evo_stage).color;
+function drawSpriteFit(sp,cx,cy,maxW,maxH){ const s=Math.min(maxW/sp.naturalWidth,maxH/sp.naturalHeight);
+  const w=sp.naturalWidth*s,h=sp.naturalHeight*s; ctx.drawImage(sp,cx-w/2,cy-h/2,w,h); }
+function drawLizard(x,y,scale){
+  if(IMG.has(G.evo_stage)){ drawSpriteFit(IMG.objs[G.evo_stage],x,y,80*scale,80*scale); return; }
+  const c=EVO.stats(G.evo_stage).color;
   ctx.fillStyle=c; ctx.beginPath(); ctx.arc(x,y,20*scale,0,7); ctx.fill();
   ctx.fillStyle=shade(c,-0.15); ctx.beginPath(); ctx.arc(x-18*scale,y+6*scale,8*scale,0,7); ctx.fill();
   ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(x+12*scale,y-8*scale,6*scale,0,7); ctx.fill();
@@ -311,8 +345,9 @@ function render(){
   // HUD
   hud();
 
-  if(G.state===ST.TITLE){ drawLizard(MID_X,250,2.2); titleButtons(); txt(G.center,W/2,150,52,"#fff");
-    txt(G.hint,W/2,690,22,"rgba(255,255,255,.9)"); drawButtons(); return; }
+  if(G.state===ST.TITLE){ drawLizard(MID_X,210,1.7); titleButtons(); txt(G.center,W/2,140,50,"#fff");
+    txt(G.hint,W/2,700,22,"rgba(255,255,255,.9)"); drawButtons(); return; }
+  if(G.state===ST.IMAGES){ imagesScreen(); drawButtons(); return; }
   if(G.state===ST.SHOP){ drawLizard(MID_X,300,2.0); txt(G.center,W/2,140,46,"#fff"); shopButtons();
     txt("💠 보유 에너지 "+G.wallet,W/2,200,28,"#ffe");
     closeButton(); drawButtons(); return; }
@@ -368,10 +403,10 @@ function angleIndicator(){ const ox=LAUNCH_X,oy=GROUND_Y-26; const st=effStats()
   angleRay(ox,oy,LF.ANGLE_IDEAL,"rgba(76,230,102,.8)",175); angleRay(ox,oy,G.angle,"#f24033",200); }
 
 function titleButtons(){ const labels=[["solo","혼자하기"],["versus","둘이 대결"],["shop","상점"],
-  ["challenge","무한 챌린지"],["leaderboard","리더보드"],["daily","일일 도전"]];
-  const bw=380,bh=80,gx=40,gy=24, x0=W/2-bw-gx/2, y0=360;
+  ["challenge","무한 챌린지"],["leaderboard","리더보드"],["daily","일일 도전"],["images","🖼️ 캐릭터 이미지"]];
+  const bw=380,bh=64,gx=40,gy=16, x0=W/2-bw-gx/2, y0=318;
   for(let i=0;i<labels.length;i++){ const col=i%2, row=(i/2)|0;
-    G.buttons.push(btn(labels[i][0],labels[i][1],x0+col*(bw+gx),y0+row*(bh+gy),bw,bh,"rgba(20,30,55,.82)",30)); } }
+    G.buttons.push(btn(labels[i][0],labels[i][1],x0+col*(bw+gx),y0+row*(bh+gy),bw,bh,"rgba(20,30,55,.82)",28)); } }
 function shopButtons(){ G.buttons.push(btn("buy_scale","가벼운 비늘 · 공기저항↓  ("+SHOP_SCALE_COST+")",300,330,680,90,"rgba(20,40,60,.85)",30));
   G.buttons.push(btn("buy_core","강화 코어 · 파워↑  ("+SHOP_CORE_COST+")",300,440,680,90,"rgba(40,30,60,.85)",30)); }
 function closeButton(){ G.buttons.push(btn("title","✕ 타이틀",24,20,150,56,"rgba(0,0,0,.45)",24)); }
@@ -381,6 +416,18 @@ function leaderboardList(){ ctx.textAlign="left";
     const nm=EVO.stats(e.stage).name; const y=180+i*40;
     txt((i+1)+".",360,y,26,"#ffe","left"); txt(e.dist.toFixed(1)+" m"+star,420,y,26,"#fff","left");
     txt("["+nm+"]  "+(e.date||""),660,y,22,"rgba(255,255,255,.8)","left"); } }
+function imagesScreen(){ txt("🖼️ 캐릭터 이미지",W/2,90,42,"#fff");
+  txt("이 기기 브라우저에만 저장됩니다 (저장소·공유에는 포함 안 됨)",W/2,130,22,"rgba(255,255,255,.85)");
+  const names=["1. 도마뱀","2. 모토마","3. 미라이돈"];
+  for(let i=0;i<3;i++){ const bx=160+i*330, by=180, bs=240;
+    ctx.fillStyle="rgba(0,0,0,.25)"; ctx.fillRect(bx,by,bs,bs);
+    ctx.strokeStyle="rgba(255,255,255,.4)"; ctx.lineWidth=2; ctx.strokeRect(bx,by,bs,bs);
+    if(IMG.has(i)) drawSpriteFit(IMG.objs[i],bx+bs/2,by+bs/2,bs-20,bs-20);
+    else txt("없음",bx+bs/2,by+bs/2+10,28,"rgba(255,255,255,.55)");
+    txt(names[i],bx+bs/2,by+bs+34,26,"#fff");
+    G.buttons.push(btn("img"+i,"사진 선택",bx+30,by+bs+50,bs-60,52,"rgba(20,40,60,.85)",24)); }
+  G.buttons.push(btn("img_clear","전체 지우기",W/2-260,600,250,60,"rgba(70,25,25,.85)",26));
+  G.buttons.push(btn("title","✕ 타이틀",W/2+10,600,250,60,"rgba(0,0,0,.45)",26)); }
 function drawButtons(){ for(const b of G.buttons) drawBtn(b); }
 
 // ===== 루프 / 입력 바인딩 =====
@@ -398,7 +445,7 @@ window.addEventListener("resize",fit);
   G.best_distance=+d.best_distance||0; G.total_distance=+d.total_distance||0; G.drag_bonus=+d.drag_bonus||0;
   G.pmul_bonus=+d.pmul_bonus||0; G.leaderboard=Array.isArray(d.leaderboard)?d.leaderboard:[];
   G.daily_date=d.daily_date||""; G.daily_best=+d.daily_best||0; G.evo_stage=EVO.stageFor(G.lifetime_energy);
-  enterTitle(); fit(); requestAnimationFrame(loop); })();
+  IMG.load(); enterTitle(); fit(); requestAnimationFrame(loop); })();
 </script>
 </body>
 </html>
