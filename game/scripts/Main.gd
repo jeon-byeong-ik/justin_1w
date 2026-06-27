@@ -11,8 +11,8 @@
 #   공통  : Esc=타이틀
 extends Node2D
 
-enum State { TITLE, READY, CHARGE, AIM, FLIGHT, EVOLVE, RESULT, MATCH, SHOP }
-enum Mode { SOLO, VERSUS }
+enum State { TITLE, READY, CHARGE, AIM, FLIGHT, EVOLVE, RESULT, MATCH, SHOP, LEADERBOARD }
+enum Mode { SOLO, VERSUS, CHALLENGE }
 
 # --- 튜닝 값 ---
 const CHARGE_TIME := 3.0
@@ -65,6 +65,7 @@ var drag_bonus := 0.0      # 상점 영구 강화
 var pmul_bonus := 0.0
 var evo_stage := 0
 var region_idx := 0
+var leaderboard: Array = []  # 무한 챌린지 기록(상위 10)
 
 # 대결 상태
 var current_player := 1
@@ -78,6 +79,7 @@ var title_label: Label
 var center_label: Label
 var hint_label: Label
 var hud_label: Label
+var list_label: Label   # 리더보드 목록
 var audio: AudioManager
 
 # --- 스프라이트 ---
@@ -99,7 +101,8 @@ func _ready() -> void:
 	add_child(audio)
 	title_label = _make_label(24, Color.WHITE, Vector2(0, 14), 1280, HORIZONTAL_ALIGNMENT_CENTER)
 	hud_label = _make_label(22, Color(0.95, 0.97, 1.0), Vector2(24, 52), 1232, HORIZONTAL_ALIGNMENT_LEFT)
-	center_label = _make_label(50, Color.WHITE, Vector2(0, 208), 1280, HORIZONTAL_ALIGNMENT_CENTER)
+	center_label = _make_label(46, Color.WHITE, Vector2(0, 120), 1280, HORIZONTAL_ALIGNMENT_CENTER)
+	list_label = _make_label(24, Color(0.96, 0.98, 1.0), Vector2(330, 200), 620, HORIZONTAL_ALIGNMENT_LEFT)
 	hint_label = _make_label(25, Color(1, 1, 1, 0.92), Vector2(0, 612), 1280, HORIZONTAL_ALIGNMENT_CENTER)
 
 	var d := SaveData.load_data()
@@ -109,6 +112,7 @@ func _ready() -> void:
 	total_distance = float(d.total_distance)
 	drag_bonus = float(d.drag_bonus)
 	pmul_bonus = float(d.pmul_bonus)
+	leaderboard = d.leaderboard if d.leaderboard is Array else []
 	evo_stage = Evolution.stage_for_energy(lifetime_energy)
 	_enter_title()
 
@@ -130,6 +134,7 @@ func _persist() -> void:
 		"total_distance": total_distance,
 		"drag_bonus": drag_bonus,
 		"pmul_bonus": pmul_bonus,
+		"leaderboard": leaderboard,
 	})
 
 # 진화 단계 능력치 + 상점 영구 강화 반영
@@ -166,6 +171,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				_buy("core")
 		State.EVOLVE:
 			_finish_evolve()
+		State.LEADERBOARD:
+			if _is_confirm(kc, mb, touch):
+				mode = Mode.CHALLENGE
+				_enter_ready()
 		State.RESULT:
 			if _is_confirm(kc, mb, touch):
 				_advance_result()
@@ -184,7 +193,7 @@ func _is_confirm(kc: int, mb: bool, touch: bool) -> bool:
 	return mb or touch or kc in [KEY_SPACE, KEY_ENTER, KEY_KP_ENTER, KEY_A, KEY_L]
 
 func _acting_player(kc: int, mb: bool, touch: bool, px: float) -> int:
-	if mode == Mode.SOLO:
+	if mode != Mode.VERSUS:   # 솔로·챌린지: 모든 입력이 1P
 		return 1
 	if kc == KEY_A:
 		return 1
@@ -199,6 +208,13 @@ func _acting_player(kc: int, mb: bool, touch: bool, px: float) -> int:
 func _title_input(kc: int, mb: bool, touch: bool, px: float) -> void:
 	if kc in [KEY_3, KEY_KP_3]:
 		_enter_shop()
+		return
+	if kc in [KEY_4, KEY_KP_4]:
+		mode = Mode.CHALLENGE
+		_enter_ready()
+		return
+	if kc in [KEY_5, KEY_KP_5]:
+		_enter_leaderboard()
 		return
 	var pick_solo := kc in [KEY_1, KEY_KP_1, KEY_SPACE, KEY_ENTER, KEY_KP_ENTER] or ((mb or touch) and px < MID_X)
 	var pick_versus := kc in [KEY_2, KEY_KP_2] or ((mb or touch) and px >= MID_X)
@@ -224,8 +240,9 @@ func _enter_title() -> void:
 	state = State.TITLE
 	evo_stage = Evolution.stage_for_energy(lifetime_energy)
 	region_idx = Region.index_for(total_distance)
+	list_label.text = ""
 	center_label.text = "🦎 도마뱀 발사!"
-	hint_label.text = "[1] 혼자하기      [2] 둘이 대결      [3] 상점       (화면 좌/우 탭으로도 선택)"
+	hint_label.text = "[1] 혼자하기   [2] 둘이 대결   [3] 상점   [4] 무한 챌린지   [5] 리더보드"
 	_refresh_hud()
 
 func _enter_ready() -> void:
@@ -234,12 +251,17 @@ func _enter_ready() -> void:
 	charge_timer = 0.0
 	angle = 0.0
 	sweet = 0.0
+	list_label.text = ""
 	if mode == Mode.SOLO:
 		region_idx = Region.index_for(total_distance)
 		var rg := Region.get_region(region_idx)
 		current_wind = randf_range(float(rg.wind_min), float(rg.wind_max))
 		center_label.text = ""
 		hint_label.text = "[탭/스페이스] 발사 시작!" + _wind_text()
+	elif mode == Mode.CHALLENGE:
+		current_wind = 0.0   # 무한 챌린지는 무풍(기록 공정성)
+		center_label.text = ""
+		hint_label.text = "♾️ 무한 챌린지 — [탭/스페이스]로 발사! 최고 비거리에 도전"
 	else:
 		current_wind = 0.0
 		var key_name := "A" if current_player == 1 else "L"
@@ -311,6 +333,26 @@ func _enter_result() -> void:
 		state = State.RESULT
 		center_label.text = result_center
 		hint_label.text = result_hint
+	elif mode == Mode.CHALLENGE:
+		if last_distance > best_distance:
+			best_distance = last_distance
+		var rank := Leaderboard.rank_of(leaderboard, last_distance)
+		leaderboard = Leaderboard.add(leaderboard, {
+			"dist": last_distance,
+			"perfect": last_perfect,
+			"stage": evo_stage,
+			"date": Time.get_date_string_from_system(),
+		})
+		_persist()
+		state = State.RESULT
+		center_label.text = "%.1f m%s" % [last_distance, perfect_txt]
+		if rank == 1:
+			audio.play("win")
+			hint_label.text = "🥇 신기록 1위!   [탭] 다시 · [Esc] 타이틀"
+		elif rank <= Leaderboard.MAX_ENTRIES:
+			hint_label.text = "🏆 랭크 #%d 진입!   [탭] 다시 · [Esc] 타이틀" % rank
+		else:
+			hint_label.text = "랭크 #%d   [탭] 다시 · [Esc] 타이틀" % rank
 	else:
 		versus_dist[current_player - 1] = last_distance
 		state = State.RESULT
@@ -335,13 +377,33 @@ func _finish_evolve() -> void:
 	_refresh_hud()
 
 func _advance_result() -> void:
-	if mode == Mode.SOLO:
+	if mode != Mode.VERSUS:        # 솔로·챌린지: 바로 다시
 		_enter_ready()
 	elif current_player == 1:
 		current_player = 2
 		_enter_ready()
 	else:
 		_resolve_round()
+
+# ---- 리더보드 ----
+func _enter_leaderboard() -> void:
+	state = State.LEADERBOARD
+	center_label.text = "🏆 무한 챌린지 리더보드"
+	list_label.text = _format_leaderboard()
+	hint_label.text = "[탭/스페이스] 무한 챌린지 시작 · [Esc] 타이틀"
+	_refresh_hud()
+
+func _format_leaderboard() -> String:
+	if leaderboard.is_empty():
+		return "아직 기록이 없어요.\n[탭]을 눌러 첫 발사를 날려보세요!"
+	var s := ""
+	for i in range(leaderboard.size()):
+		var e: Dictionary = leaderboard[i]
+		var star := " ✨" if bool(e.get("perfect", false)) else ""
+		var nm := Evolution.stats(int(e.get("stage", 0))).name
+		s += "%2d.   %7.1f m%s   [%s]   %s\n" % [
+			i + 1, float(e.get("dist", 0.0)), star, nm, str(e.get("date", ""))]
+	return s
 
 # ---- 대결 ----
 func _start_versus() -> void:
@@ -386,6 +448,7 @@ func _advance_match() -> void:
 # ---- 상점 ----
 func _enter_shop() -> void:
 	state = State.SHOP
+	list_label.text = ""
 	center_label.text = "🛒 상점"
 	_refresh_shop_hint()
 	_refresh_hud()
@@ -450,6 +513,9 @@ func _refresh_hud() -> void:
 	if mode == Mode.VERSUS and state in [State.READY, State.CHARGE, State.AIM, State.FLIGHT, State.RESULT, State.MATCH]:
 		hud_label.text = "VERSUS · R%d (3판 2선승)    P1 %d : %d P2    ▶ 현재 P%d" % [
 			round_num, scores[0], scores[1], current_player]
+	elif mode == Mode.CHALLENGE and state in [State.READY, State.CHARGE, State.AIM, State.FLIGHT, State.RESULT]:
+		hud_label.text = "♾️ 무한 챌린지   %s   🥇 리더보드 1위 %.1fm   (내 최고 %.1fm)" % [
+			Evolution.stats(evo_stage).name, Leaderboard.best(leaderboard), best_distance]
 	else:
 		var nxt := Evolution.energy_to_next(lifetime_energy)
 		var nxt_txt := "다음 진화 %d" % nxt if nxt > 0 else "진화 완료"
@@ -460,11 +526,14 @@ func _refresh_hud() -> void:
 # ==================== 렌더링 ====================
 func _draw() -> void:
 	var rg := Region.get_region(region_idx)
-	var sky: Color = rg.sky if mode == Mode.SOLO else Color(0.52, 0.78, 0.92)
-	var ground: Color = rg.ground if mode == Mode.SOLO else Color(0.40, 0.62, 0.32)
+	var solo_play := mode == Mode.SOLO and state in [State.READY, State.CHARGE, State.AIM, State.FLIGHT, State.EVOLVE, State.RESULT]
+	var sky: Color = rg.sky if solo_play else Color(0.52, 0.78, 0.92)
+	var ground: Color = rg.ground if solo_play else Color(0.40, 0.62, 0.32)
 	draw_rect(Rect2(0, 0, 1280, 720), sky)
 	draw_rect(Rect2(0, GROUND_Y, 1280, 720 - GROUND_Y), ground)
 
+	if state == State.LEADERBOARD:
+		return  # 리더보드는 라벨로 표시
 	if state == State.TITLE:
 		_draw_lizard(Vector2(MID_X, 400), Evolution.stats(evo_stage).color, 1.0)
 		return

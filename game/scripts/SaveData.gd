@@ -20,6 +20,7 @@ static func defaults() -> Dictionary:
 		"total_distance": 0.0,
 		"drag_bonus": 0.0,
 		"pmul_bonus": 0.0,
+		"leaderboard": [],   # 무한 챌린지 기록(상위 10)
 	}
 
 static func load_data() -> Dictionary:
